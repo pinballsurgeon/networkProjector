@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Network Traffic Analyzer",
+  "version": "1.1.0",
+  "description": "Real-time network stats + 3D token-space visualization",
+  "permissions": ["storage", "webRequest"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_page": "options.html",
+  "action": { "default_title": "Traffic Analyzer", "default_popup": "options.html" },
+  "web_accessible_resources": [{
+    "resources": ["three.min.js"],
+    "matches": ["<all_urls>"]
+  }]
+}

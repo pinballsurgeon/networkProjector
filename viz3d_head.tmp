@@ -1,0 +1,385 @@
+import { logger } from './logger.js';
+import { OrbitControls } from './OrbitControls.js';
+
+let scene, camera, renderer, points, controls;
+const MAX_POINTS = 2500;
+let initialized = false;
+let packetCache = []; // currently displayed/filtered points
+let resizeObserver = null;
+let allPackets = []; // full dataset from storage
+let projectionMode = 'absolute'; // 'absolute' | 'relative'
+let rangeStartPct = 0; // 0..100
+let rangeEndPct = 100; // 0..100
+let timeMin = null; // ms
+let timeMax = null; // ms
+
+function getTimeFromPct(pct) {
+    if (timeMin == null || timeMax == null) return null;
+    const span = Math.max(0, timeMax - timeMin);
+    return timeMin + (pct / 100) * span;
+}
+
+function fmtTime(ts) {
+    try {
+        return new Date(ts).toLocaleTimeString();
+    } catch { return String(ts); }
+}
+
+function handleResize() {
+    const container = document.getElementById('viz-container');
+    if (!container || !renderer || !camera) return;
+    const width = Math.max(1, container.clientWidth || 0);
+    const height = Math.max(1, container.clientHeight || 0);
+    if (width === 1 && height === 1) {
+        // Likely still hidden; try again soon
+        requestAnimationFrame(handleResize);
+        return;
+    }
+    renderer.setSize(width, height);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+}
+
+export function init() {
+    if (initialized) return;
+    initialized = true;
+
+    const container = document.getElementById('viz-container');
+    if (!container) return;
+
+    // Scene
+    scene = new THREE.Scene();
+
+    // Camera
+    const initialWidth = Math.max(1, container.clientWidth || 0);
+    const initialHeight = Math.max(1, container.clientHeight || 0);
+    logger.debug('Initializing 3D viz', { width: initialWidth, height: initialHeight });
+    camera = new THREE.PerspectiveCamera(75, initialWidth / initialHeight, 0.1, 10000);
+    camera.position.z = 30;
+
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setSize(initialWidth, initialHeight);
+    container.appendChild(renderer.domElement);
+
+    // Keep renderer/camera sized correctly
+    window.addEventListener('resize', handleResize);
+    if ('ResizeObserver' in window) {
+        resizeObserver = new ResizeObserver(() => handleResize());
+        resizeObserver.observe(container);
+    }
+
+    // Points
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(MAX_POINTS * 3);
+    const colors = new Float32Array(MAX_POINTS * 3);
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const material = new THREE.PointsMaterial({ size: 4.5, vertexColors: true, sizeAttenuation: false });
+    points = new THREE.Points(geometry, material);
+    points.frustumCulled = false; // avoid unexpected culling while debugging
+    scene.add(points);
+
+    // Controls
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+
+    const recenterBtn = document.getElementById('recenter-btn');
+    if (recenterBtn) {
+        recenterBtn.addEventListener('click', () => {
+            if (points.geometry.boundingSphere) {
+                const center = points.geometry.boundingSphere.center;
+                const radius = points.geometry.boundingSphere.radius;
+                const fov = camera.fov * (Math.PI / 180);
+                const distance = Math.max(50, Math.abs(radius / Math.sin(fov / 2)));
+                camera.position.set(center.x, center.y, center.z + distance);
+                controls.target.copy(center);
+                controls.update();
+            }
+        });
+    } else {
+        logger.warn('Recenter button not found when initializing viz');
+    }
+
+    // Raycasting for point selection
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    raycaster.params.Points.threshold = 1; // Adjust threshold for easier clicking
+
+    renderer.domElement.addEventListener('click', (event) => {
+        const rect = renderer.domElement.getBoundingClientRect();
+        mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(points);
+
+        if (intersects.length > 0) {
+            const index = intersects[0].index;
+            if (packetCache[index]) {
+                displayPacketInfo(packetCache[index]);
+            }
+        }
+    });
+
+    // Listen for storage changes
+    chrome.storage.onChanged.addListener((changes, namespace) => {
+        if (namespace === 'local' && changes.vectorizedPackets) {
+            updatePoints(changes.vectorizedPackets.newValue);
+        }
+    });
+
+    // Initial load
+    chrome.storage.local.get('vectorizedPackets', (result) => {
+        if (result.vectorizedPackets) {
+            updatePoints(result.vectorizedPackets);
+        }
+    });
+
+    // UI controls for projection mode and time window
+    const modeSelect = document.getElementById('projection-mode');
+    const startSlider = document.getElementById('time-range-start');
+    const endSlider = document.getElementById('time-range-end');
+    const startLabel = document.getElementById('time-start-label');
+    const endLabel = document.getElementById('time-end-label');
+
+    function updateLabels() {
+        const sTs = getTimeFromPct(rangeStartPct);
+        const eTs = getTimeFromPct(rangeEndPct);
+        if (startLabel && sTs != null) startLabel.textContent = fmtTime(sTs);
+        if (endLabel && eTs != null) endLabel.textContent = fmtTime(eTs);
+    }
+
+    if (modeSelect) {
+        modeSelect.addEventListener('change', () => {
+            projectionMode = modeSelect.value;
+            rebuildGeometry();
+        });
+    }
+    function clampRange() {
+        if (rangeStartPct > rangeEndPct) {
+            const tmp = rangeStartPct; rangeStartPct = rangeEndPct; rangeEndPct = tmp;
+            if (startSlider && endSlider) {
+                startSlider.value = String(rangeStartPct);
+                endSlider.value = String(rangeEndPct);
+            }
+        }
+        updateLabels();
+        rebuildGeometry();
+    }
+    if (startSlider && endSlider) {
+        startSlider.addEventListener('input', () => { rangeStartPct = parseInt(startSlider.value, 10) || 0; clampRange(); });
+        endSlider.addEventListener('input', () => { rangeEndPct = parseInt(endSlider.value, 10) || 100; clampRange(); });
+        updateLabels();
+    }
+
+    animate();
+}
+
+function updatePoints(packetData) {
+    // Set all packets and time bounds, then rebuild view
+    allPackets = Array.isArray(packetData) ? packetData : [];
+    const tsVals = allPackets.map(p => p.ts).filter(v => typeof v === 'number' && isFinite(v));
+    if (tsVals.length) {
+        timeMin = Math.min(...tsVals);
+        timeMax = Math.max(...tsVals);
+    } else {
+        timeMin = timeMax = null;
+    }
+    rebuildGeometry();
+}
+
+function filterPacketsByTime(data) {
+    if (timeMin == null || timeMax == null) return data;
+    const startTs = getTimeFromPct(rangeStartPct);
+    const endTs = getTimeFromPct(rangeEndPct);
+    if (startTs == null || endTs == null) return data;
+    const s = Math.min(startTs, endTs);
+    const e = Math.max(startTs, endTs);
+    return data.filter(p => typeof p.ts === 'number' ? (p.ts >= s && p.ts <= e) : true);
+}
+
+function rebuildGeometry() {
+    const data = allPackets || [];
+    const valid = data.filter(p => p && p.y && p.y.every && p.y.every(isFinite));
+    const windowed = filterPacketsByTime(valid);
+    logger.debug('Updating points', { total: data.length, valid: valid.length, windowed: windowed.length, mode: projectionMode });
+
+    let positions3D;
+    if (projectionMode === 'relative') {
+        positions3D = computeRelativePCA(windowed);
+    } else {
+        positions3D = windowed.map(p => (Array.isArray(p.y) ? p.y : Array.from(p.y)));
+    }
+
+    const positions = points.geometry.attributes.position.array;
+    const colors = points.geometry.attributes.color.array;
+    const numPoints = Math.min(positions3D.length, MAX_POINTS);
+
+    if (numPoints === 0) {
+        packetCache = [];
+        points.geometry.setDrawRange(0, 0);
+        points.geometry.attributes.position.needsUpdate = true;
+        return;
+    }
+
+    packetCache = windowed.slice(0, numPoints);
+    for (let i = 0; i < numPoints; i++) {
+        const y = positions3D[i];
+        const idx = i * 3;
+        positions[idx] = y[0] * 10;
+        positions[idx + 1] = y[1] * 10;
+        positions[idx + 2] = y[2] * 10;
+
+        const packet = packetCache[i];
+        const color = new THREE.Color();
+        color.setHSL((packet.cluster || 0) / 8, 0.8, 0.6);
+        colors[idx] = color.r;
+        colors[idx + 1] = color.g;
+        colors[idx + 2] = color.b;
+    }
+
+    points.geometry.attributes.position.needsUpdate = true;
+    points.geometry.attributes.color.needsUpdate = true;
+    points.geometry.setDrawRange(0, numPoints);
+
+    // Auto-frame
+    points.geometry.computeBoundingSphere();
+    const sphere = points.geometry.boundingSphere;
+    if (sphere && sphere.radius > 0) {
+        const center = sphere.center;
+        const radius = sphere.radius;
+        logger.debug('Bounding sphere computed:', { center, radius });
+        const fov = camera.fov * (Math.PI / 180);
+        const distance = Math.max(50, Math.abs(radius / Math.sin(fov / 2)));
+        const near = Math.max(0.1, distance - radius * 2);
+        const far = Math.max(distance + radius * 2, 2000);
+        camera.near = near; camera.far = far; camera.updateProjectionMatrix();
+        camera.position.set(center.x, center.y, center.z + distance);
+        camera.lookAt(center);
+        if (controls) { controls.target.copy(center); controls.update(); }
+        logger.debug('Camera position updated:', { position: camera.position, target: center });
+    }
+}
+
+function computeRelativePCA(packets) {
+    const X = packets.map(p => p.diagnostics && Array.isArray(p.diagnostics.projected) ? p.diagnostics.projected : (p.diagnostics && p.diagnostics.projected ? Array.from(p.diagnostics.projected) : null)).filter(v => Array.isArray(v));
+    if (X.length < 2) {
+        return packets.map(p => (Array.isArray(p.y) ? p.y : Array.from(p.y)));
+    }
+    const N = X.length;
+    const D = X[0].length;
+    const mean = new Float64Array(D);
+    const varr = new Float64Array(D);
+    for (let i = 0; i < N; i++) {
+        const xi = X[i];
+        for (let d = 0; d < D; d++) mean[d] += xi[d];
+    }
+    for (let d = 0; d < D; d++) mean[d] /= N;
+    for (let i = 0; i < N; i++) {
+        const xi = X[i];
+        for (let d = 0; d < D; d++) { const diff = xi[d] - mean[d]; varr[d] += diff * diff; }
+    }
+    for (let d = 0; d < D; d++) varr[d] = Math.max(1e-12, varr[d] / (N - 1));
+    const Z = new Array(N);
+    for (let i = 0; i < N; i++) {
+        const row = new Float64Array(D);
+        const xi = X[i];
+        for (let d = 0; d < D; d++) row[d] = (xi[d] - mean[d]) / Math.sqrt(varr[d]);
+        Z[i] = row;
+    }
+    const C = new Float64Array(D * D);
+    for (let i = 0; i < N; i++) {
+        const zi = Z[i];
+        for (let a = 0; a < D; a++) {
+            const za = zi[a];
+            for (let b = 0; b < D; b++) C[a * D + b] += za * zi[b];
+        }
+    }
+    const scale = 1 / (N - 1);
+    for (let k = 0; k < C.length; k++) C[k] *= scale;
+    const comps = [];
+    const maxIter = 40; const tol = 1e-6; let Cwork = C;
+    for (let m = 0; m < 3; m++) {
+        let v = new Float64Array(D);
+        for (let d = 0; d < D; d++) v[d] = Math.random() - 0.5;
+        let nrm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+        if (nrm === 0) v[0] = 1; else for (let d = 0; d < D; d++) v[d] /= nrm;
+        let lambda = 0;
+        for (let it = 0; it < maxIter; it++) {
+            const w = new Float64Array(D);
+            for (let i2 = 0; i2 < D; i2++) {
+                let s = 0; const row = i2 * D;
+                for (let j2 = 0; j2 < D; j2++) s += Cwork[row + j2] * v[j2];
+                w[i2] = s;
+            }
+            const n = Math.sqrt(w.reduce((s, x) => s + x * x, 0));
+            if (n < 1e-12) break;
+            for (let d = 0; d < D; d++) v[d] = w[d] / n;
+            const newLambda = dotVecMatVec(v, Cwork, v, D);
+            if (Math.abs(newLambda - lambda) < tol) { lambda = newLambda; break; }
+            lambda = newLambda;
+        }
+        comps.push({ vec: v, val: lambda });
+        const Cnext = new Float64Array(D * D);
+        for (let i2 = 0; i2 < D; i2++) for (let j2 = 0; j2 < D; j2++) Cnext[i2 * D + j2] = Cwork[i2 * D + j2] - lambda * v[i2] * v[j2];
+        Cwork = Cnext;
+    }
+    const W = new Float64Array(D * 3);
+    for (let m = 0; m < 3; m++) for (let d = 0; d < D; d++) W[d * 3 + m] = (comps[m] && comps[m].vec ? comps[m].vec[d] : 0);
+    const Y = new Array(N);
+    for (let i = 0; i < N; i++) {
+        const zi = Z[i];
+        const y = [0, 0, 0];
+        for (let m = 0; m < 3; m++) {
+            let s = 0; for (let d = 0; d < D; d++) s += zi[d] * W[d * 3 + m];
+            y[m] = s;
+        }
+        Y[i] = y;
+    }
+    return Y;
+}
+
+function dotVecMatVec(v1, M, v2, D) {
+    let s = 0;
+    for (let i = 0; i < D; i++) {
+        let r = 0; const row = i * D;
+        for (let j = 0; j < D; j++) r += M[row + j] * v2[j];
+        s += v1[i] * r;
+    }
+    return s;
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+function displayPacketInfo(packet) {
+    logger.info('Displaying info for packet:', packet.id);
+    const infoContainer = document.getElementById('info-container');
+    if (!infoContainer) {
+        logger.error('Info container not found!');
+        return;
+    }
+
+    // Sanitize URL to prevent XSS
+    const url = document.createElement('a');
+    url.href = packet.url;
+    const safeURL = url.href;
+
+    let content = `
+        <h3>Packet Details (ID: ${packet.id})</h3>
+        <p><strong>URL:</strong> <a href="${safeURL}" target="_blank">${safeURL}</a></p>
+        <p><strong>Status:</strong> ${packet.status}</p>
+        <p><strong>Method:</strong> ${packet.method}</p>
+        <p><strong>Cluster:</strong> ${packet.cluster}</p>
+        <pre>${JSON.stringify(packet.diagnostics, null, 2)}</pre>
+    `;
+
+    infoContainer.innerHTML = content;
+    infoContainer.style.display = 'block';
+}

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Network Traffic Analyzer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1, h2 { color: #333; }
+    #stats { margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
+    tr:nth-child(even) { background-color: #f9f9f9; }
+    .chart-container { margin-bottom: 20px; background-color: #f9f9f9; border: 1px solid #ddd; }
+    #trafficChart { width: 100%; height: 200px; }
+    .chart-line { fill: none; stroke: #007bff; stroke-width: 2; }
+    .tabs { margin-bottom: 10px; }
+    .tab-button { padding: 10px; cursor: pointer; border: 1px solid #ccc; background-color: #f2f2f2; }
+    .tab-button.active { background-color: #fff; border-bottom: 1px solid #fff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    #info-container {
+      position: absolute;
+      top: 120px;
+      right: 40px;
+      width: 300px;
+      max-height: 80%;
+      overflow-y: auto;
+      background-color: rgba(255, 255, 255, 0.9);
+      border: 1px solid #ccc;
+      padding: 15px;
+      display: none;
+      z-index: 100;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    #info-container h3 { margin-top: 0; }
+    #info-container pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        background-color: #f4f4f4;
+        padding: 10px;
+        border-radius: 4px;
+    }
+    /* Status strip chips */
+    #status-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 10px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; background: #eef2ff; color: #334155; border: 1px solid #c7d2fe; border-radius: 16px; padding: 2px 8px; font-size: 12px; }
+    .chip .close { cursor: pointer; padding: 0 4px; color: #1e3a8a; }
+    .chip .close:hover { color: #172554; }
+  </style>
+</head>
+<body>
+  <h1>Network Traffic Analyzer</h1>
+
+  <div class="tabs">
+    <button class="tab-button active" data-tab="stats">Stats</button>
+    <button class="tab-button" data-tab="map">3D Map</button>
+  </div>
+
+  <div id="statsContent" class="tab-content active">
+    <div class="chart-container">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2>Real-time Traffic Rate</h2>
+        <div>
+          <label for="timeWindow">Time Window:</label>
+          <select id="timeWindow">
+            <option value="all">All Time</option>
+            <option value="hour">Last Hour</option>
+            <option value="minute" selected>Last Minute</option>
+          </select>
+        </div>
+      </div>
+      <svg id="trafficChart" preserveAspectRatio="xMidYMid meet"></svg>
+    </div>
+    <div id="stats">
+      <h2>Live Statistics</h2>
+      <p><strong>Packets In:</strong> <span id="packetsInCount">0</span></p>
+      <p><strong>Packets Out:</strong> <span id="packetsOutCount">0</span></p>
+      <p><strong>Total Data In:</strong> <span id="totalBytesIn">0</span> bytes</p>
+      <p><strong>Total Data Out:</strong> <span id="totalBytesOut">0</span> bytes</p>
+    </div>
+    <h2>Recent Network Packets (Last 30)</h2>
+    <table id="packetsTable">
+      <thead>
+        <tr>
+          <th>URL</th>
+          <th>Method</th>
+          <th>Status</th>
+          <th>Type</th>
+          <th>Timestamp</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Packet data will be inserted here by options.js -->
+      </tbody>
+    </table>
+  </div>
+
+  <div id="mapContent" class="tab-content">
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap;">
+        <h2 style="margin: 0;">3D Packet Visualization</h2>
+        <button id="recenter-btn" style="padding: 5px 10px;">Recenter</button>
+        <button id="play-toggle" style="padding: 5px 10px;">Play</button>
+        <label>Speed:
+          <select id="play-speed">
+            <option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+          </select>
+        </label>
+        <label>Projection:
+          <select id="projection-mode">
+            <option value="absolute" selected>Absolute</option>
+            <option value="relative">Relative (window)</option>
+          </select>
+        </label>
+        <label>Clusters:
+          <select id="cluster-filter" multiple size="3" style="min-width: 120px;"></select>
+        </label>
+        <label>Domains:
+          <select id="domain-filter" multiple size="4" style="min-width: 200px;"></select>
+        </label>
+        <label>Top Tokens:
+          <select id="token-filter" multiple size="6" style="min-width: 220px;"></select>
+        </label>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span id="time-start-label">start</span>
+          <input id="time-range-start" type="range" min="0" max="100" value="0" step="1"/>
+          <input id="time-range-end" type="range" min="0" max="100" value="100" step="1"/>
+          <span id="time-end-label">end</span>
+        </div>
+        <div style="width:100%;">
+          <canvas id="time-histogram" style="width: 100%; height: 60px; border: 1px solid #eee; background: #fafafa;"></canvas>
+        </div>
+    </div>
+    <div id="status-strip">
+      <!-- chips rendered dynamically -->
+      <button id="clear-all-filters" style="padding:4px 10px;">Clear All Filters</button>
+    </div>
+    <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap;">
+      <strong>Vectorization:</strong>
+      <label>Weighting
+        <select id="weighting-mode">
+          <option value="count" selected>Count</option>
+          <option value="tfidf">TF-IDF</option>
+        </select>
+      </label>
+      <label>minDF
+        <input id="min-df" type="number" min="0" max="1" step="0.01" value="0" style="width:70px;"/>
+      </label>
+      <label>maxDF
+        <input id="max-df" type="number" min="0" max="1" step="0.01" value="1" style="width:70px;"/>
+      </label>
+      <label>Vocab Size
+        <input id="vocab-size" type="number" min="128" step="64" value="1000" style="width:90px;"/>
+      </label>
+      <button id="apply-vector-settings" style="padding:4px 10px;">Apply</button>
+      <button id="reset-filters" style="padding:4px 10px;">Reset Filters</button>
+    </div>
+    <div id="viz-container" style="width: 100%; height: 500px; border: 1px solid #ddd; position: relative;"></div>
+    <div id="info-container"></div>
+  </div>
+
+  <script src="three.min.js"></script>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
