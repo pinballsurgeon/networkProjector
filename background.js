@@ -34,8 +34,12 @@ chrome.webRequest.onSendHeaders.addListener(
     const requestHeadersSize = details.requestHeaders.reduce((acc, header) => acc + header.name.length + (header.value ? header.value.length : 0), 0);
     totalBytesOut += requestHeadersSize;
 
-    // Store request size to use it in onCompleted
-    requestData[details.requestId] = { requestHeadersSize };
+    // Store request size and start time to use it in onCompleted
+    requestData[details.requestId] = {
+      requestHeadersSize,
+      startTime: details.timeStamp,
+      requestHeaders: details.requestHeaders || [],
+    };
 
     chrome.storage.local.set({
       packetsOutCount,
@@ -54,7 +58,22 @@ chrome.webRequest.onCompleted.addListener(
     const responseHeadersSize = details.responseHeaders ? details.responseHeaders.reduce((acc, header) => acc + header.name.length + (header.value ? header.value.length : 0), 0) : 0;
     totalBytesIn += responseHeadersSize;
 
-    const storedRequestData = requestData[details.requestId] || { requestHeadersSize: 0 };
+    const storedRequestData = requestData[details.requestId] || { requestHeadersSize: 0, startTime: details.timeStamp, requestHeaders: [] };
+
+    // Approximate latency (ms) from first sendHeaders to completed
+    const latencyMs = Math.max(0, details.timeStamp - (storedRequestData.startTime || details.timeStamp));
+
+    function getHeader(headers, name) {
+      const lower = name.toLowerCase();
+      if (!headers) return null;
+      for (const h of headers) {
+        if ((h.name || '').toLowerCase() === lower) return h.value || null;
+      }
+      return null;
+    }
+
+    const reqContentLength = parseInt(getHeader(storedRequestData.requestHeaders, 'content-length') || '0', 10) || 0;
+    const resContentLength = parseInt(getHeader(details.responseHeaders || [], 'content-length') || '0', 10) || 0;
 
     const packetInfo = {
       requestId: details.requestId,
@@ -66,6 +85,9 @@ chrome.webRequest.onCompleted.addListener(
       requestHeadersSize: storedRequestData.requestHeadersSize,
       responseHeadersSize,
       responseHeaders: details.responseHeaders || [],
+      latencyMs,
+      requestContentLength: reqContentLength,
+      responseContentLength: resContentLength,
     };
 
     queuePacket(packetInfo);

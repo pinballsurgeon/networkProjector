@@ -73,24 +73,81 @@ function murmur32(str, seed=State.hashSeed){
 }
 
 // ---- Core Logic ----
+
+function getRootDomain(host) {
+    if (!host) return '';
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length >= 2) return parts[parts.length - 2];
+    return host;
+}
+
+function bucketSize(bytes) {
+    if (!bytes || !isFinite(bytes) || bytes <= 0) return 'none';
+    if (bytes < 1024) return 'tiny';
+    if (bytes < 16 * 1024) return 'small';
+    if (bytes < 128 * 1024) return 'medium';
+    if (bytes < 1024 * 1024) return 'large';
+    return 'huge';
+}
+
+function bucketLatency(ms) {
+    if (!ms || !isFinite(ms) || ms <= 0) return 'unknown';
+    if (ms < 50) return 'fast';
+    if (ms < 200) return 'medium';
+    if (ms < 1000) return 'slow';
+    return 'veryslow';
+}
+
 function tokenize(packet) {
     const tokens = new Set();
     try {
         const url = new URL(packet.url);
         tokens.add(`host:${url.hostname}`);
-        url.pathname.split('/').forEach(seg => seg && tokens.add(`path:${seg}`));
+        const root = getRootDomain(url.hostname);
+        if (root) tokens.add(`root:${root}`);
+        const pathSegs = url.pathname.split('/').filter(Boolean);
+        pathSegs.forEach(seg => {
+            tokens.add(`path:${seg}`);
+            if (/^\d+$/.test(seg)) tokens.add('pathseg:num');
+            else if (/^[0-9a-fA-F-]{8,}$/.test(seg)) tokens.add('pathseg:hexish');
+            else tokens.add('pathseg:alpha');
+        });
+        tokens.add(`depth:${pathSegs.length}`);
         url.searchParams.forEach((_, key) => tokens.add(`query:${key}`));
     } catch (e) {
-        // Invalid URL, skip tokenization
+        // Invalid URL, skip URL-derived tokens
     }
     tokens.add(`method:${packet.method}`);
     tokens.add(`type:${packet.type}`);
     tokens.add(`status:${Math.floor(packet.statusCode / 100)}xx`);
     packet.responseHeaders.forEach(h => {
-        if (h.name.toLowerCase() === 'content-type') {
-            tokens.add(`type:${h.value.split(';')[0]}`);
+        if (!h || !h.name) return;
+        const name = h.name.toLowerCase();
+        const value = (h.value || '').toLowerCase();
+        if (name === 'content-type') {
+            tokens.add(`type:${value.split(';')[0]}`);
+        } else if (name === 'cache-control') {
+            if (value.includes('no-store') || value.includes('no-cache')) tokens.add('cache:nocache');
+            if (value.includes('max-age')) tokens.add('cache:maxage');
+        } else if (name === 'content-encoding') {
+            tokens.add(`encoding:${value}`);
         }
     });
+
+    // Flow / size / latency features (prefixed so we can focus on them in certain views)
+    const reqBytes = (packet.requestContentLength || 0) + (packet.requestHeadersSize || 0);
+    const resBytes = (packet.responseContentLength || 0) + (packet.responseHeadersSize || 0);
+    const totalBytes = reqBytes + resBytes;
+    const sizeBucket = bucketSize(totalBytes);
+    const reqBucket = bucketSize(reqBytes);
+    const resBucket = bucketSize(resBytes);
+    const latBucket = bucketLatency(packet.latencyMs);
+
+    tokens.add(`flow:size:${sizeBucket}`);
+    tokens.add(`flow:reqSize:${reqBucket}`);
+    tokens.add(`flow:resSize:${resBucket}`);
+    tokens.add(`flow:latency:${latBucket}`);
+
     return tokens;
 }
 
@@ -265,10 +322,11 @@ function processQueue() {
 
         const diagnostics = {
             tokens: [...tokens],
-            vector: Array.from(vec.slice(0, 100)), // Log first 100 dims
-            projected: Array.from(pvec),
-            scaled: Array.from(scaled_pvec),
-            pca: Array.from(y),
+            // First 100 dims of hashed vector are already small ints; keep as-is
+            vector: Array.from(vec.slice(0, 100)),
+            projected: Array.from(pvec).map(v => Math.round(v * 1000) / 1000),
+            scaled: Array.from(scaled_pvec).map(v => Math.round(v * 1000) / 1000),
+            pca: Array.from(y).map(v => Math.round(v * 1000) / 1000),
             vocabSize: State.vocab.size,
             tombstones: State.tombstones,
         };

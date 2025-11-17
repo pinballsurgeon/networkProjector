@@ -53,6 +53,7 @@
   <div class="tabs">
     <button class="tab-button active" data-tab="stats">Stats</button>
     <button class="tab-button" data-tab="map">3D Map</button>
+    <button class="tab-button" data-tab="solar">Solar 4D</button>
   </div>
 
   <div id="statsContent" class="tab-content active">
@@ -112,11 +113,25 @@
             <option value="relative">Relative (window)</option>
           </select>
         </label>
+        <label>View:
+          <select id="projection-view">
+            <option value="endpoint" selected>Endpoint</option>
+            <option value="flow">Flow</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <label>Relativity
+          <input id="relative-mix" type="range" min="0" max="1" step="0.05" value="1"/>
+        </label>
         <label>Clusters:
           <select id="cluster-filter" multiple size="3" style="min-width: 120px;"></select>
         </label>
         <label>Domains:
           <select id="domain-filter" multiple size="4" style="min-width: 200px;"></select>
+        </label>
+        <label>Domain Labels:
+          <input id="domain-label-count" type="range" min="0" max="12" value="6" step="1"/>
+          <span id="domain-label-count-display">6</span>
         </label>
         <label>Top Tokens:
           <select id="token-filter" multiple size="6" style="min-width: 220px;"></select>
@@ -126,6 +141,18 @@
           <input id="time-range-start" type="range" min="0" max="100" value="0" step="1"/>
           <input id="time-range-end" type="range" min="0" max="100" value="100" step="1"/>
           <span id="time-end-label">end</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+          <label>Time Consistency
+            <input id="time-consistency" type="range" min="0" max="1" step="0.05" value="0"/>
+          </label>
+          <label>Trails
+            <input id="trail-enabled" type="checkbox"/>
+          </label>
+          <label>Trail Length
+            <input id="trail-length" type="range" min="1" max="60" step="1" value="10"/>
+            <span id="trail-length-display">10s</span>
+          </label>
         </div>
         <div style="width:100%;">
           <canvas id="time-histogram" style="width: 100%; height: 60px; border: 1px solid #eee; background: #fafafa;"></canvas>
@@ -152,11 +179,23 @@
       <label>Vocab Size
         <input id="vocab-size" type="number" min="128" step="64" value="1000" style="width:90px;"/>
       </label>
+      <label>Precision
+        <input id="precision-decimals" type="range" min="0" max="4" step="1" value="3"/>
+        <span id="precision-decimals-display">3</span>
+      </label>
       <button id="apply-vector-settings" style="padding:4px 10px;">Apply</button>
       <button id="reset-filters" style="padding:4px 10px;">Reset Filters</button>
+      <button id="auto-vector-settings" style="padding:4px 10px;">Auto</button>
     </div>
     <div id="viz-container" style="width: 100%; height: 500px; border: 1px solid #ddd; position: relative;"></div>
     <div id="info-container"></div>
+  </div>
+
+  <div id="solarContent" class="tab-content">
+    <div id="solar-container" style="width: 100%; height: 600px; border: 1px solid #ddd; position: relative; background: #000;"></div>
+    <div id="solar-controls" style="position: absolute; top: 120px; left: 40px;">
+        <!-- This will be populated by viz4d.js -->
+    </div>
   </div>
 
   <script src="three.min.js"></script>

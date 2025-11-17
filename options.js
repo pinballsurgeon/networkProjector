@@ -1,4 +1,5 @@
 import { init as initViz } from './viz3d.js';
+import { init as initSolarViz } from './viz4d.js';
 
 const packetsInCountEl = document.getElementById('packetsInCount');
 const packetsOutCountEl = document.getElementById('packetsOutCount');
@@ -91,9 +92,11 @@ document.querySelectorAll('.tab-button').forEach(button => {
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     document.getElementById(`${tab}Content`).classList.add('active');
 
-    // Now initialize the 3D view when visible
+    // Initialize the appropriate view when visible
     if (tab === 'map') {
       initViz();
+    } else if (tab === 'solar') {
+      initSolarViz();
     }
   });
 });

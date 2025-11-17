@@ -22,6 +22,23 @@ let histCanvas = null;
 let histCtx = null;
 const HIST_BINS = 50;
 let statusStrip = null;
+let projectionView = 'endpoint'; // 'endpoint' | 'flow' | 'all'
+let timeConsistency = 0; // 0..1, 0 = adapt fast, 1 = very stable
+let relativeMix = 1; // 0 = absolute coordinates, 1 = fully relative
+let precisionDecimals = 3; // 0..4
+
+// Position smoothing and camera framing
+let lastPositionsById = new Map();
+const POSITION_INERTIA = 0.2; // 0..1 blend toward new positions
+let hasFramedOnce = false;
+
+// Domain label overlay state
+let domainLabelOverlay = null;
+let domainLabelElems = [];
+let visibleDomainLabels = [];
+let maxDomainLabels = 6;
+let domainLabelCountInputEl = null;
+let domainLabelCountLabelEl = null;
 
 function getTimeFromPct(pct) {
     if (timeMin == null || timeMax == null) return null;
@@ -81,6 +98,17 @@ export function init() {
     renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.setSize(initialWidth, initialHeight);
     container.appendChild(renderer.domElement);
+
+    // Overlay container for domain labels (HTML on top of canvas)
+    domainLabelOverlay = document.createElement('div');
+    domainLabelOverlay.style.position = 'absolute';
+    domainLabelOverlay.style.left = '0';
+    domainLabelOverlay.style.top = '0';
+    domainLabelOverlay.style.width = '100%';
+    domainLabelOverlay.style.height = '100%';
+    domainLabelOverlay.style.pointerEvents = 'none';
+    domainLabelOverlay.style.zIndex = '10';
+    container.appendChild(domainLabelOverlay);
 
     // Keep renderer/camera sized correctly
     window.addEventListener('resize', handleResize);
@@ -165,6 +193,11 @@ export function init() {
     const endLabel = document.getElementById('time-end-label');
     const playBtn = document.getElementById('play-toggle');
     const speedSel = document.getElementById('play-speed');
+    const viewSelect = document.getElementById('projection-view');
+    const relativeMixInput = document.getElementById('relative-mix');
+    const trailEnabledInput = document.getElementById('trail-enabled');
+    const trailLengthInput = document.getElementById('trail-length');
+    const trailLengthDisplay = document.getElementById('trail-length-display');
     const clusterSel = document.getElementById('cluster-filter');
     const domainSel = document.getElementById('domain-filter');
     const tokenSel = document.getElementById('token-filter');
@@ -172,11 +205,32 @@ export function init() {
     const minDfInput = document.getElementById('min-df');
     const maxDfInput = document.getElementById('max-df');
     const vocabSizeInput = document.getElementById('vocab-size');
+    const precisionInput = document.getElementById('precision-decimals');
+    const precisionDisplay = document.getElementById('precision-decimals-display');
     const applyBtn = document.getElementById('apply-vector-settings');
     const resetBtn = document.getElementById('reset-filters');
+    const timeConsistencyInput = document.getElementById('time-consistency');
+    const autoBtn = document.getElementById('auto-vector-settings');
     histCanvas = document.getElementById('time-histogram');
     histCtx = histCanvas ? histCanvas.getContext('2d') : null;
     statusStrip = document.getElementById('status-strip');
+    domainLabelCountInputEl = document.getElementById('domain-label-count');
+    domainLabelCountLabelEl = document.getElementById('domain-label-count-display');
+
+    // Domain label count slider wiring
+    if (domainLabelCountInputEl) {
+        maxDomainLabels = parseInt(domainLabelCountInputEl.value, 10) || maxDomainLabels;
+        if (domainLabelCountLabelEl) {
+            domainLabelCountLabelEl.textContent = String(maxDomainLabels);
+        }
+        domainLabelCountInputEl.addEventListener('input', () => {
+            maxDomainLabels = Math.max(0, parseInt(domainLabelCountInputEl.value, 10) || 0);
+            if (domainLabelCountLabelEl) {
+                domainLabelCountLabelEl.textContent = String(maxDomainLabels);
+            }
+            rebuildGeometry();
+        });
+    }
 
     function updateLabels() {
         const sTs = getTimeFromPct(rangeStartPct);
@@ -190,6 +244,48 @@ export function init() {
         modeSelect.addEventListener('change', () => {
             projectionMode = modeSelect.value;
             rebuildGeometry();
+        });
+    }
+    if (viewSelect) {
+        projectionView = viewSelect.value || 'endpoint';
+        viewSelect.addEventListener('change', () => {
+            projectionView = viewSelect.value || 'endpoint';
+            rebuildGeometry();
+            renderStatus();
+        });
+    }
+    if (precisionInput) {
+        precisionDecimals = Math.max(0, Math.min(4, parseInt(precisionInput.value, 10) || 3));
+        if (precisionDisplay) precisionDisplay.textContent = String(precisionDecimals);
+        precisionInput.addEventListener('input', () => {
+            precisionDecimals = Math.max(0, Math.min(4, parseInt(precisionInput.value, 10) || 3));
+            if (precisionDisplay) precisionDisplay.textContent = String(precisionDecimals);
+        });
+    }
+    if (relativeMixInput) {
+        relativeMix = Math.max(0, Math.min(1, parseFloat(relativeMixInput.value) || 1));
+        relativeMixInput.addEventListener('input', () => {
+            relativeMix = Math.max(0, Math.min(1, parseFloat(relativeMixInput.value) || 1));
+            if (projectionMode === 'relative') rebuildGeometry();
+        });
+    }
+    if (timeConsistencyInput) {
+        timeConsistency = Math.max(0, Math.min(1, parseFloat(timeConsistencyInput.value) || 0));
+        timeConsistencyInput.addEventListener('input', () => {
+            timeConsistency = Math.max(0, Math.min(1, parseFloat(timeConsistencyInput.value) || 0));
+            if (projectionMode === 'relative') rebuildGeometry();
+        });
+    }
+    if (trailLengthInput && trailLengthDisplay) {
+        trailLengthDisplay.textContent = `${trailLengthInput.value}s`;
+        trailLengthInput.addEventListener('input', () => {
+            trailLengthDisplay.textContent = `${trailLengthInput.value}s`;
+            if (trailEnabledInput && trailEnabledInput.checked && projectionMode === 'absolute') rebuildGeometry();
+        });
+    }
+    if (trailEnabledInput) {
+        trailEnabledInput.addEventListener('change', () => {
+            if (projectionMode === 'absolute') rebuildGeometry();
         });
     }
     function clampRange() {
@@ -284,6 +380,12 @@ export function init() {
         });
     }
 
+    if (autoBtn) {
+        autoBtn.addEventListener('click', () => {
+            runAutoVectorSettings();
+        });
+    }
+
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
             // Clear selections
@@ -352,16 +454,27 @@ function parseHost(u) {
     try { return new URL(u).hostname; } catch { return ''; }
 }
 
+// Extract a simple domain key: the label just before the TLD (e.g. "google" from "www.google.com")
+function getDomainKey(host) {
+    if (!host) return '';
+    const parts = host.split('.').filter(Boolean);
+    if (parts.length >= 2) {
+        return parts[parts.length - 2];
+    }
+    return host;
+}
+
 function applySelections(data) {
     return data.filter(p => {
         // cluster filter
         if (selectedClusters.size > 0) {
             if (!selectedClusters.has(String(p.cluster))) return false;
         }
-        // domain filter
+        // domain filter (grouped by root domain label)
         if (selectedDomains.size > 0) {
             const host = parseHost(p.url);
-            if (!selectedDomains.has(host)) return false;
+            const key = getDomainKey(host);
+            if (!selectedDomains.has(key)) return false;
         }
         // token filter (any match)
         if (selectedTokens.size > 0) {
@@ -382,7 +495,8 @@ function populateFilters(windowed) {
         const c = String(p.cluster || 0);
         clusterCounts.set(c, (clusterCounts.get(c) || 0) + 1);
         const host = parseHost(p.url);
-        if (host) domainCounts.set(host, (domainCounts.get(host) || 0) + 1);
+        const key = getDomainKey(host);
+        if (key) domainCounts.set(key, (domainCounts.get(key) || 0) + 1);
         const toks = (p.diagnostics && p.diagnostics.tokens) ? p.diagnostics.tokens : [];
         for (const t of toks) tokenCounts.set(t, (tokenCounts.get(t) || 0) + 1);
     }
@@ -411,19 +525,58 @@ function populateFilters(windowed) {
 function rebuildGeometry() {
     const data = allPackets || [];
     const valid = data.filter(p => p && p.y && p.y.every && p.y.every(isFinite));
-    const windowed = filterPacketsByTime(valid);
+    let windowed = filterPacketsByTime(valid);
+    // Optional trail limiting in absolute mode
+    const trailEnabledInput = document.getElementById('trail-enabled');
+    const trailLengthInput = document.getElementById('trail-length');
+    const trailsOn = trailEnabledInput && trailEnabledInput.checked && projectionMode === 'absolute';
+    let maxTrailMs = null;
+    let trailNowTs = null;
+    if (trailsOn && trailLengthInput) {
+        const lenSec = Math.max(1, parseInt(trailLengthInput.value, 10) || 10);
+        maxTrailMs = lenSec * 1000;
+        // Use end of current time window (or global latest) as "now" for trails
+        const endTsFromSlider = getTimeFromPct(rangeEndPct);
+        trailNowTs = (endTsFromSlider != null) ? endTsFromSlider : timeMax;
+        if (trailNowTs != null) {
+            windowed = windowed.filter(p => {
+                const ts = typeof p.ts === 'number' ? p.ts : NaN;
+                if (!isFinite(ts)) return false;
+                const age = trailNowTs - ts;
+                return age <= maxTrailMs && age >= 0;
+            });
+        }
+    }
     const filtered = applySelections(windowed);
     populateFilters(windowed);
     logger.debug('Updating points', { total: data.length, valid: valid.length, windowed: windowed.length, filtered: filtered.length, mode: projectionMode });
 
     let positions3D;
     let relClusters = null;
+
+    const absPositions = filtered.map(p => (Array.isArray(p.y) ? p.y : Array.from(p.y)));
+
     if (projectionMode === 'relative') {
-        positions3D = computeRelativePCA(filtered);
+        const relPositions = computeRelativePCA(filtered);
+        const mix = Math.max(0, Math.min(1, relativeMix));
+        if (mix >= 1) {
+            positions3D = relPositions;
+        } else if (mix <= 0) {
+            positions3D = absPositions;
+        } else {
+            positions3D = relPositions.map((r, i) => {
+                const a = absPositions[i] || r;
+                return [
+                    a[0] * (1 - mix) + r[0] * mix,
+                    a[1] * (1 - mix) + r[1] * mix,
+                    a[2] * (1 - mix) + r[2] * mix,
+                ];
+            });
+        }
         const k = Math.max(1, Math.min(8, positions3D.length));
         relClusters = (positions3D.length >= 2) ? kmeans3D(positions3D, k, 10) : { labels: new Array(positions3D.length).fill(0), k, centers: [] };
     } else {
-        positions3D = filtered.map(p => (Array.isArray(p.y) ? p.y : Array.from(p.y)));
+        positions3D = absPositions;
     }
 
     // Fallback if degenerate positions (all same / near-zero variance)
@@ -446,40 +599,124 @@ function rebuildGeometry() {
 
     if (numPoints === 0) {
         packetCache = [];
+        lastPositionsById = new Map();
+        hasFramedOnce = false;
         points.geometry.setDrawRange(0, 0);
         points.geometry.attributes.position.needsUpdate = true;
+        visibleDomainLabels = [];
+        syncDomainLabelElements();
         return;
     }
 
     packetCache = filtered.slice(0, numPoints);
+    const domainStats = new Map();
+    const nextPositions = new Map();
     for (let i = 0; i < numPoints; i++) {
         const y = positions3D[i];
         const idx = i * 3;
-        positions[idx] = y[0] * 10;
-        positions[idx + 1] = y[1] * 10;
-        positions[idx + 2] = y[2] * 10;
+        const rawX = y[0] * 10;
+        const rawY = y[1] * 10;
+        const rawZ = y[2] * 10;
 
         const packet = packetCache[i];
+        const prev = packet && packet.id != null ? lastPositionsById.get(packet.id) : null;
+        let px = rawX;
+        let py = rawY;
+        let pz = rawZ;
+        if (prev && Array.isArray(prev) && prev.length === 3) {
+            const alpha = POSITION_INERTIA;
+            const inv = 1 - alpha;
+            px = prev[0] * inv + rawX * alpha;
+            py = prev[1] * inv + rawY * alpha;
+            pz = prev[2] * inv + rawZ * alpha;
+        }
+        positions[idx] = px;
+        positions[idx + 1] = py;
+        positions[idx + 2] = pz;
+        if (packet && packet.id != null) {
+            nextPositions.set(packet.id, [px, py, pz]);
+        }
+
         const color = new THREE.Color();
         const denom = (projectionMode === 'relative' && relClusters) ? Math.max(1, relClusters.k || 8) : 8;
         const cls = (projectionMode === 'relative' && relClusters) ? relClusters.labels[i] : (packet.cluster || 0);
-        color.setHSL((cls % denom) / denom, 0.8, 0.6);
+
+        // Time-based fade in absolute mode with trails
+        let sat = 0.8;
+        let light = 0.6;
+        if (trailsOn && maxTrailMs != null && trailNowTs != null && typeof packet.ts === 'number' && isFinite(packet.ts)) {
+            const age = Math.max(0, Math.min(maxTrailMs, trailNowTs - packet.ts));
+            const t = age / maxTrailMs; // 0 = newest, 1 = oldest in trail
+            const fade = 1 - t;
+            sat = 0.3 + 0.7 * fade;
+            light = 0.3 + 0.4 * fade;
+        }
+        color.setHSL((cls % denom) / denom, sat, light);
         colors[idx] = color.r;
         colors[idx + 1] = color.g;
         colors[idx + 2] = color.b;
+
+        // Accumulate per-domain centroid stats (grouped by domain key)
+        const host = parseHost(packet.url);
+        const key = getDomainKey(host);
+        if (key) {
+            let s = domainStats.get(key);
+            if (!s) {
+                s = { sumX: 0, sumY: 0, sumZ: 0, count: 0 };
+                domainStats.set(key, s);
+            }
+            s.sumX += px;
+            s.sumY += py;
+            s.sumZ += pz;
+            s.count++;
+        }
     }
+    lastPositionsById = nextPositions;
+
+    // Build sorted list of visible domain centroids for labeling
+    if (domainStats.size && maxDomainLabels > 0) {
+        const allDomains = [];
+        for (const [key, s] of domainStats.entries()) {
+            const cx = s.sumX / s.count;
+            const cy = s.sumY / s.count;
+            const cz = s.sumZ / s.count;
+            allDomains.push({
+                key,
+                count: s.count,
+                center: new THREE.Vector3(cx, cy, cz),
+            });
+        }
+        allDomains.sort((a, b) => b.count - a.count);
+        const limit = Math.max(0, Math.min(maxDomainLabels, allDomains.length));
+        visibleDomainLabels = allDomains.slice(0, limit);
+        if (domainLabelCountInputEl) {
+            // Let the slider know how many labels are possible (cap for sanity)
+            const maxSlider = Math.min(allDomains.length, 24);
+            domainLabelCountInputEl.max = String(maxSlider);
+            if (maxDomainLabels > maxSlider) {
+                maxDomainLabels = maxSlider;
+                domainLabelCountInputEl.value = String(maxDomainLabels);
+                if (domainLabelCountLabelEl) {
+                    domainLabelCountLabelEl.textContent = String(maxDomainLabels);
+                }
+            }
+        }
+    } else {
+        visibleDomainLabels = [];
+    }
+    syncDomainLabelElements();
 
     points.geometry.attributes.position.needsUpdate = true;
     points.geometry.attributes.color.needsUpdate = true;
     points.geometry.setDrawRange(0, numPoints);
 
-    // Auto-frame
+    // Keep bounding sphere updated for overlays and recenter, but only auto-frame once
     points.geometry.computeBoundingSphere();
     const sphere = points.geometry.boundingSphere;
-    if (sphere && sphere.radius > 0) {
+    if (!hasFramedOnce && sphere && sphere.radius > 0) {
         const center = sphere.center;
         const radius = sphere.radius;
-        logger.debug('Bounding sphere computed:', { center, radius });
+        logger.debug('Bounding sphere computed (initial frame):', { center, radius });
         const fov = camera.fov * (Math.PI / 180);
         const distance = Math.max(50, Math.abs(radius / Math.sin(fov / 2)));
         const near = Math.max(0.1, distance - radius * 2);
@@ -488,7 +725,8 @@ function rebuildGeometry() {
         camera.position.set(center.x, center.y, center.z + distance);
         camera.lookAt(center);
         if (controls) { controls.target.copy(center); controls.update(); }
-        logger.debug('Camera position updated:', { position: camera.position, target: center });
+        hasFramedOnce = true;
+        logger.debug('Camera position auto-framed', { position: camera.position, target: center });
     }
 }
 
@@ -543,6 +781,69 @@ function drawHistogram() {
     ctx.moveTo(x1 + 0.5, 0);
     ctx.lineTo(x1 + 0.5, h);
     ctx.stroke();
+}
+
+function syncDomainLabelElements() {
+    if (!domainLabelOverlay) return;
+    // Remove any extra elements
+    while (domainLabelElems.length > visibleDomainLabels.length) {
+        const el = domainLabelElems.pop();
+        if (el && el.parentNode === domainLabelOverlay) {
+            domainLabelOverlay.removeChild(el);
+        }
+    }
+    // Add missing elements
+    while (domainLabelElems.length < visibleDomainLabels.length) {
+        const el = document.createElement('div');
+        el.className = 'domain-label';
+        el.style.position = 'absolute';
+        el.style.transform = 'translate(-50%, -50%)';
+        el.style.padding = '2px 6px';
+        el.style.fontSize = '11px';
+        el.style.borderRadius = '999px';
+        el.style.background = 'rgba(15,23,42,0.85)';
+        el.style.color = '#e2e8f0';
+        el.style.pointerEvents = 'auto';
+        el.style.whiteSpace = 'nowrap';
+        domainLabelOverlay.appendChild(el);
+        domainLabelElems.push(el);
+    }
+    // Update labels text
+    for (let i = 0; i < visibleDomainLabels.length; i++) {
+        const el = domainLabelElems[i];
+        const dom = visibleDomainLabels[i];
+        el.textContent = `${dom.key} (${dom.count})`;
+        el.style.display = 'block';
+    }
+    if (visibleDomainLabels.length === 0) {
+        // Hide any leftover elements
+        for (const el of domainLabelElems) {
+            el.style.display = 'none';
+        }
+    }
+}
+
+function updateDomainLabels() {
+    if (!domainLabelOverlay || !camera || !renderer) return;
+    if (!visibleDomainLabels.length || !domainLabelElems.length) return;
+    const width = renderer.domElement.clientWidth || 1;
+    const height = renderer.domElement.clientHeight || 1;
+    for (let i = 0; i < visibleDomainLabels.length; i++) {
+        const el = domainLabelElems[i];
+        const dom = visibleDomainLabels[i];
+        const v = dom.center.clone();
+        v.project(camera);
+        // Cull if behind camera or off-screen
+        if (v.z < 0 || v.z > 1 || v.x < -1 || v.x > 1 || v.y < -1 || v.y > 1) {
+            el.style.display = 'none';
+            continue;
+        }
+        el.style.display = 'block';
+        const x = (v.x * 0.5 + 0.5) * width;
+        const y = (-v.y * 0.5 + 0.5) * height;
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+    }
 }
 
 function renderStatus() {
@@ -644,6 +945,108 @@ function renderStatus() {
     }
 }
 
+// Simple local Auto mode: try a small grid of vectorizer settings on the current window
+function runAutoVectorSettings() {
+    if (!allPackets || allPackets.length < 10) {
+        logger.info('Auto vector settings skipped: not enough packets');
+        return;
+    }
+    const data = allPackets.filter(p => p && p.y && p.y.every && p.y.every(isFinite));
+    const windowed = filterPacketsByTime(data);
+    const sample = (projectionMode === 'absolute') ? data : windowed;
+    if (sample.length < 10) {
+        logger.info('Auto vector settings skipped: not enough packets in sample');
+        return;
+    }
+
+    const candidates = [];
+    const weightings = ['count', 'tfidf'];
+    const minDfs = [0, 0.01, 0.05];
+    const maxDfs = [0.9, 1.0];
+    const ks = [6, 8];
+    for (const w of weightings) {
+        for (const minDf of minDfs) {
+            for (const maxDf of maxDfs) {
+                if (minDf >= maxDf) continue;
+                for (const k of ks) {
+                    candidates.push({ weighting: w, minDfRatio: minDf, maxDfRatio: maxDf, k });
+                }
+            }
+        }
+    }
+
+    let bestScore = -Infinity;
+    let bestCfg = null;
+
+    for (const cfg of candidates) {
+        try {
+            const X = projectTokensToDims(sample, 12, cfg);
+            if (X.length < 2) continue;
+            const k = Math.max(2, Math.min(cfg.k, X.length));
+            const km = kmeans3D(X.map(v => (Array.isArray(v) ? v : Array.from(v))), k, 8);
+            if (!km || !km.labels || km.labels.length === 0) continue;
+
+            // Compute compactness: average distance to cluster center
+            let compactSum = 0;
+            for (let i = 0; i < X.length; i++) {
+                const c = km.labels[i] || 0;
+                const center = km.centers && km.centers[c] ? km.centers[c] : [0,0,0];
+                const p = X[i];
+                const dx = p[0] - center[0];
+                const dy = p[1] - center[1];
+                const dz = p[2] - center[2];
+                compactSum += Math.sqrt(dx*dx + dy*dy + dz*dz);
+            }
+            const compactness = compactSum / X.length;
+
+            // Separation: average pairwise distance between cluster centers
+            let sepSum = 0;
+            let sepCnt = 0;
+            if (km.centers && km.centers.length > 1) {
+                for (let i = 0; i < km.centers.length; i++) {
+                    for (let j = i + 1; j < km.centers.length; j++) {
+                        const a = km.centers[i];
+                        const b = km.centers[j];
+                        const dx = a[0] - b[0];
+                        const dy = a[1] - b[1];
+                        const dz = a[2] - b[2];
+                        sepSum += Math.sqrt(dx*dx + dy*dy + dz*dz);
+                        sepCnt++;
+                    }
+                }
+            }
+            const separation = sepCnt > 0 ? (sepSum / sepCnt) : 0;
+
+            if (!isFinite(compactness) || compactness <= 1e-6) continue;
+            const score = separation / compactness;
+            if (score > bestScore) {
+                bestScore = score;
+                bestCfg = cfg;
+            }
+        } catch (e) {
+            logger.warn('Auto vector candidate failed', e);
+        }
+    }
+
+    if (!bestCfg) {
+        logger.info('Auto vector settings could not find a better configuration');
+        return;
+    }
+
+    vectorizerSettings = {
+        ...vectorizerSettings,
+        weighting: bestCfg.weighting,
+        minDfRatio: bestCfg.minDfRatio,
+        maxDfRatio: bestCfg.maxDfRatio,
+    };
+    chrome.storage.local.set({ vectorizerSettings });
+    logger.info('Auto-selected vectorizer settings', bestCfg);
+
+    // Rebuild using the current projection mode to reflect new settings
+    rebuildGeometry();
+    renderStatus();
+}
+
 function computeRelativePCA(packets) {
     // Build projected features from tokens using current weighting settings
     const proj = projectTokensToDims(packets, 16, vectorizerSettings);
@@ -655,25 +1058,76 @@ function computeRelativePCA(packets) {
     const D = X[0].length;
     const mean = new Float64Array(D);
     const varr = new Float64Array(D);
-    // quick variance check before standardization
+    const weights = new Float64Array(N);
+
+    // Time-consistency weights: emphasize mid-window timestamps when slider > 0
+    let wSum = 0;
+    let tMinLocal = Infinity;
+    let tMaxLocal = -Infinity;
+    if (timeConsistency > 0) {
+        for (const p of packets) {
+            const ts = typeof p.ts === 'number' ? p.ts : NaN;
+            if (!isFinite(ts)) continue;
+            if (ts < tMinLocal) tMinLocal = ts;
+            if (ts > tMaxLocal) tMaxLocal = ts;
+        }
+        if (!isFinite(tMinLocal) || tMinLocal === tMaxLocal) {
+            tMinLocal = Infinity;
+            tMaxLocal = -Infinity;
+        }
+    }
+    for (let i = 0; i < N; i++) {
+        let w = 1;
+        if (timeConsistency > 0 && isFinite(tMinLocal) && isFinite(tMaxLocal)) {
+            const p = packets[i];
+            const ts = typeof p.ts === 'number' ? p.ts : tMinLocal;
+            const span = tMaxLocal - tMinLocal || 1;
+            const tNorm = Math.min(1, Math.max(0, (ts - tMinLocal) / span));
+            const focus = 1 - Math.abs(2 * tNorm - 1); // peak in middle
+            const base = 1 - timeConsistency;
+            w = base + timeConsistency * focus;
+        }
+        weights[i] = w;
+        wSum += w;
+    }
+    if (!isFinite(wSum) || wSum <= 0) {
+        return packets.map(p => (Array.isArray(p.y) ? p.y : Array.from(p.y)));
+    }
+
+    // weighted mean
     for (let i = 0; i < N; i++) {
         const xi = X[i];
-        for (let d = 0; d < D; d++) mean[d] += xi[d];
+        const wi = weights[i];
+        for (let d = 0; d < D; d++) mean[d] += wi * xi[d];
     }
-    for (let d = 0; d < D; d++) mean[d] /= N;
+    for (let d = 0; d < D; d++) mean[d] /= wSum;
+
+    // quick variance check before standardization
     let varSumQuick = 0;
     for (let i = 0; i < N; i++) {
         const xi = X[i];
-        for (let d = 0; d < D; d++) { const diff = xi[d] - mean[d]; varSumQuick += diff * diff; }
+        const wi = weights[i];
+        for (let d = 0; d < D; d++) {
+            const diff = xi[d] - mean[d];
+            varSumQuick += wi * diff * diff;
+        }
     }
     if (varSumQuick < 1e-9) {
         return packets.map(p => (Array.isArray(p.y) ? p.y : Array.from(p.y)));
     }
+
+    // weighted variance
     for (let i = 0; i < N; i++) {
         const xi = X[i];
-        for (let d = 0; d < D; d++) { const diff = xi[d] - mean[d]; varr[d] += diff * diff; }
+        const wi = weights[i];
+        for (let d = 0; d < D; d++) {
+            const diff = xi[d] - mean[d];
+            varr[d] += wi * diff * diff;
+        }
     }
-    for (let d = 0; d < D; d++) varr[d] = Math.max(1e-12, varr[d] / (N - 1));
+    const denomVar = Math.max(1, wSum - 1);
+    for (let d = 0; d < D; d++) varr[d] = Math.max(1e-12, varr[d] / denomVar);
+
     const Z = new Array(N);
     for (let i = 0; i < N; i++) {
         const row = new Float64Array(D);
@@ -681,15 +1135,17 @@ function computeRelativePCA(packets) {
         for (let d = 0; d < D; d++) row[d] = (xi[d] - mean[d]) / Math.sqrt(varr[d]);
         Z[i] = row;
     }
+
     const C = new Float64Array(D * D);
     for (let i = 0; i < N; i++) {
         const zi = Z[i];
+        const wi = weights[i];
         for (let a = 0; a < D; a++) {
-            const za = zi[a];
+            const za = zi[a] * wi;
             for (let b = 0; b < D; b++) C[a * D + b] += za * zi[b];
         }
     }
-    const scale = 1 / (N - 1);
+    const scale = 1 / Math.max(1, wSum - 1);
     for (let k = 0; k < C.length; k++) C[k] *= scale;
     const comps = [];
     const maxIter = 40; const tol = 1e-6; let Cwork = C;
@@ -811,7 +1267,37 @@ function projectTokensToDims(packets, projDim, settings){
     const df = new Map();
     for (const p of packets) {
         const toks = (p.diagnostics && Array.isArray(p.diagnostics.tokens)) ? p.diagnostics.tokens : [];
-        const set = new Set(toks);
+        const set = new Set();
+        for (const t of toks) {
+            if (projectionView === 'endpoint') {
+                // Focus on endpoint semantics: host/path/query/method/type/status/root/pathseg/depth
+                if (
+                    t.startsWith('host:') ||
+                    t.startsWith('root:') ||
+                    t.startsWith('path:') ||
+                    t.startsWith('pathseg:') ||
+                    t.startsWith('depth:') ||
+                    t.startsWith('query:') ||
+                    t.startsWith('method:') ||
+                    t.startsWith('type:') ||
+                    t.startsWith('status:')
+                ) {
+                    set.add(t);
+                }
+            } else if (projectionView === 'flow') {
+                // Focus on flow/size/latency headers
+                if (
+                    t.startsWith('flow:') ||
+                    t.startsWith('cache:') ||
+                    t.startsWith('encoding:')
+                ) {
+                    set.add(t);
+                }
+            } else {
+                // 'all' view uses all tokens
+                set.add(t);
+            }
+        }
         tokenSetList.push(set);
         docs.push(p);
         for (const t of set) df.set(t, (df.get(t) || 0) + 1);
@@ -848,6 +1334,7 @@ function animate() {
     requestAnimationFrame(animate);
     controls.update();
     renderer.render(scene, camera);
+    updateDomainLabels();
 }
 
 function displayPacketInfo(packet) {
@@ -863,13 +1350,32 @@ function displayPacketInfo(packet) {
     url.href = packet.url;
     const safeURL = url.href;
 
+    function quantizeValue(val) {
+        if (typeof val !== 'number') return val;
+        const f = 10 ** precisionDecimals;
+        return Math.round(val * f) / f;
+    }
+    function quantizeDeep(obj) {
+        if (!obj || typeof obj !== 'object') return obj;
+        if (Array.isArray(obj)) return obj.map(quantizeDeep);
+        const out = {};
+        for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (typeof v === 'number') out[k] = quantizeValue(v);
+            else if (Array.isArray(v) || (v && typeof v === 'object')) out[k] = quantizeDeep(v);
+            else out[k] = v;
+        }
+        return out;
+    }
+    const diag = quantizeDeep(packet.diagnostics || {});
+
     let content = `
         <h3>Packet Details (ID: ${packet.id})</h3>
         <p><strong>URL:</strong> <a href="${safeURL}" target="_blank">${safeURL}</a></p>
         <p><strong>Status:</strong> ${packet.status}</p>
         <p><strong>Method:</strong> ${packet.method}</p>
         <p><strong>Cluster:</strong> ${packet.cluster}</p>
-        <pre>${JSON.stringify(packet.diagnostics, null, 2)}</pre>
+        <pre>${JSON.stringify(diag, null, 2)}</pre>
     `;
 
     infoContainer.innerHTML = content;
