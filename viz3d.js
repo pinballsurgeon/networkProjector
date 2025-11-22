@@ -304,6 +304,48 @@ export function init() {
         endSlider.addEventListener('input', () => { rangeEndPct = parseInt(endSlider.value, 10) || 100; clampRange(); });
         updateLabels();
     }
+    // Allow direct time-range selection by dragging on the histogram
+    if (histCanvas && startSlider && endSlider) {
+        let isHistDragging = false;
+        let histDragStartPct = 0;
+
+        function pctFromEvent(evt) {
+            const rect = histCanvas.getBoundingClientRect();
+            if (!rect.width) return null;
+            const x = evt.clientX - rect.left;
+            const clamped = Math.max(0, Math.min(rect.width, x));
+            return (clamped / rect.width) * 100;
+        }
+
+        histCanvas.addEventListener('mousedown', (evt) => {
+            if (evt.button !== 0) return; // left button only
+            const pct = pctFromEvent(evt);
+            if (pct == null) return;
+            isHistDragging = true;
+            histDragStartPct = pct;
+            rangeStartPct = pct;
+            rangeEndPct = pct;
+            startSlider.value = String(Math.round(rangeStartPct));
+            endSlider.value = String(Math.round(rangeEndPct));
+            clampRange();
+        });
+
+        window.addEventListener('mousemove', (evt) => {
+            if (!isHistDragging) return;
+            const pct = pctFromEvent(evt);
+            if (pct == null) return;
+            rangeStartPct = Math.min(histDragStartPct, pct);
+            rangeEndPct = Math.max(histDragStartPct, pct);
+            startSlider.value = String(Math.round(rangeStartPct));
+            endSlider.value = String(Math.round(rangeEndPct));
+            clampRange();
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!isHistDragging) return;
+            isHistDragging = false;
+        });
+    }
 
     function setPlaying(on) {
         if (on) {

@@ -1,4 +1,5 @@
 import { queuePacket } from './vectorizer.js';
+import { aggregator } from './aggregator.js';
 
 let packetsInCount = 0;
 let packetsOutCount = 0;
@@ -9,23 +10,32 @@ let trafficHistory = [];
 const requestData = {}; // Temporary storage for request details
 
 // Initialize stats from storage to ensure persistence
-chrome.storage.local.get(['packetsInCount', 'packetsOutCount', 'totalBytesIn', 'totalBytesOut', 'recentPackets', 'trafficHistory'], (result) => {
+chrome.storage.local.get(['packetsInCount', 'packetsOutCount', 'totalBytesIn', 'totalBytesOut', 'recentPackets', 'trafficHistory', 'vizConfig'], (result) => {
   packetsInCount = result.packetsInCount || 0;
   packetsOutCount = result.packetsOutCount || 0;
+  
+  if (result.vizConfig) {
+      aggregator.setConfig(result.vizConfig);
+  }
   totalBytesIn = result.totalBytesIn || 0;
   totalBytesOut = result.totalBytesOut || 0;
   recentPackets = result.recentPackets || [];
   trafficHistory = result.trafficHistory || [];
 });
 
-// Periodically save the total packet count for the chart
+// Periodically save the total packet count for the chart AND the universe state
 setInterval(() => {
   const totalPackets = packetsInCount + packetsOutCount;
   if (trafficHistory.length === 0 || trafficHistory[trafficHistory.length - 1].value !== totalPackets) {
     trafficHistory.push({ time: Date.now(), value: totalPackets });
     chrome.storage.local.set({ trafficHistory });
   }
-}, 1000);
+
+  // Save the hierarchical universe state for the 4D viz
+  // 200ms update rate for smoother animation
+  const universeState = aggregator.getState();
+  chrome.storage.local.set({ universeState });
+}, 200);
 
 // Listener for outgoing requests
 chrome.webRequest.onSendHeaders.addListener(
@@ -49,6 +59,13 @@ chrome.webRequest.onSendHeaders.addListener(
   { urls: ["<all_urls>"] },
   ["requestHeaders"]
 );
+
+// Listen for config changes from UI
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.vizConfig) {
+    aggregator.setConfig(changes.vizConfig.newValue);
+  }
+});
 
 // Listener for incoming responses
 chrome.webRequest.onCompleted.addListener(
@@ -81,6 +98,7 @@ chrome.webRequest.onCompleted.addListener(
       method: details.method,
       statusCode: details.statusCode,
       type: details.type,
+      tabId: details.tabId, // Crucial for grouping by Tab/Planet
       timeStamp: details.timeStamp,
       requestHeadersSize: storedRequestData.requestHeadersSize,
       responseHeadersSize,
@@ -91,6 +109,8 @@ chrome.webRequest.onCompleted.addListener(
     };
 
     queuePacket(packetInfo);
+    aggregator.addPacket(packetInfo); // Add to hierarchical aggregator
+
     recentPackets.unshift(packetInfo);
     if (recentPackets.length > 30) {
       recentPackets.pop();
