@@ -1,5 +1,7 @@
 import { init as initViz } from './viz3d.js';
 import { init as initSolarViz } from './viz4d.js';
+import { init as initRadarViz, resize as resizeRadarViz } from './viz_radar.js';
+import { adjudicator } from './hardware_adjudicator.js';
 
 const packetsInCountEl = document.getElementById('packetsInCount');
 const packetsOutCountEl = document.getElementById('packetsOutCount');
@@ -39,10 +41,29 @@ function addPacketToTable(packet, prepend = false) {
 let allTrafficHistory = [];
 
 // Initial load
-chrome.storage.local.get(['packetsInCount', 'packetsOutCount', 'totalBytesIn', 'totalBytesOut', 'recentPackets', 'trafficHistory'], (result) => {
+chrome.storage.local.get(['packetsInCount', 'packetsOutCount', 'totalBytesIn', 'totalBytesOut', 'recentPackets', 'trafficHistory'], async (result) => {
   renderFullUI(result);
   allTrafficHistory = result.trafficHistory || [];
   updateChartData();
+  
+  // Hardware Detection & Auto-Selection
+  const tier = await adjudicator.detectTier();
+  console.log(`Hardware Tier Detected: ${tier}`);
+  
+  let defaultTab = 'stats';
+  // If user hasn't manually clicked a tab (we could store preference), auto-select based on hardware
+  // For now, let's prioritize the visualizer if hardware is decent
+  if (tier === 'high' || tier === 'medium') {
+      // defaultTab = 'solar'; // Uncomment to auto-start Solar
+  } else {
+      // defaultTab = 'radar'; // Uncomment to auto-start Radar
+  }
+
+  // Start monitoring for fallback
+  adjudicator.startMonitoring(() => {
+      console.log("Performance Degradation Detected! Switching to Radar.");
+      document.querySelector('button[data-tab="radar"]').click();
+  });
 });
 
 // Listen for changes and perform efficient updates
@@ -97,6 +118,12 @@ document.querySelectorAll('.tab-button').forEach(button => {
       initViz();
     } else if (tab === 'solar') {
       initSolarViz();
+    } else if (tab === 'radar') {
+      initRadarViz();
+      // Delay resize to ensure DOM layout is complete after display:block
+      setTimeout(() => {
+          resizeRadarViz();
+      }, 50);
     }
   });
 });

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Universal Network Mirror</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050505; color: #00ffcc; font-family: monospace; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 10px; left: 10px; pointer-events: none; z-index: 10; }
+        .hud-item { margin-bottom: 5px; text-shadow: 0 0 5px #00ffcc; }
+        
+        #inspector {
+            position: absolute; top: 10px; right: 10px; width: 300px;
+            background: rgba(0, 10, 20, 0.9); border: 1px solid #00ffcc;
+            padding: 15px; display: none; font-family: 'Courier New', monospace;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.2);
+            backdrop-filter: blur(5px); pointer-events: auto;
+        }
+        #inspector h2 { margin-top: 0; color: #fff; border-bottom: 1px solid #555; padding-bottom: 5px; font-size: 18px; }
+        .stat-row { display: flex; justify-content: space-between; margin: 5px 0; color: #aaa; font-size: 12px; }
+        .stat-value { color: #00ffcc; font-weight: bold; }
+        .grade-A { color: #0f0; } .grade-F { color: #f00; }
+        
+        #controls {
+            position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 10px; pointer-events: auto;
+        }
+        .btn {
+            background: rgba(0, 0, 0, 0.8); border: 1px solid #00ffcc; color: #00ffcc;
+            padding: 5px 15px; cursor: pointer; font-family: monospace;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: #00ffcc; color: #000; }
+        .btn.active { background: #00ffcc; color: #000; box-shadow: 0 0 10px #00ffcc; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="hud-item">UNIVERSAL NETWORK MIRROR SOTA</div>
+        <div class="hud-item" id="stats">FPS: 60 | PARTICLES: 0</div>
+        <div class="hud-item" id="time-offset">DELAY: -500ms</div>
+    </div>
+
+    <div id="controls">
+        <button class="btn" id="btn-pause">PAUSE</button>
+        <button class="btn active" id="btn-live">LIVE</button>
+    </div>
+
+    <div id="inspector">
+        <h2 id="insp-name">DOMAIN</h2>
+        <div class="stat-row"><span>TYPE</span><span class="stat-value" id="insp-type">PLANET</span></div>
+        <div class="stat-row"><span>MASS</span><span class="stat-value" id="insp-mass">0</span></div>
+        <div class="stat-row"><span>BLOAT SCORE</span><span class="stat-value" id="insp-bloat">0</span></div>
+        <div class="stat-row"><span>RATING</span><span class="stat-value" id="insp-grade">A</span></div>
+        <hr style="border-color: #333">
+        <div class="stat-row"><span>TRAFFIC</span><span class="stat-value" id="insp-traffic">0 pkts</span></div>
+        <div id="insp-details"></div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+    <script type="module" src="viewer.js"></script>
+</body>
+</html>

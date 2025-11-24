@@ -165,7 +165,8 @@ class UniverseAggregator {
         return {
             timestamp: Date.now(),
             windowDuration: this.windowDurationMs,
-            domains: planets
+            domains: planets,
+            interstellar: Array.from(this.interstellar.values())
         };
     }
 }

@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Universal Network Mirror",
+  "version": "1.0.0",
+  "description": "A Lossless, Rewindable, 4D Solar System of your digital life.",
+  "permissions": [
+    "webRequest",
+    "scripting",
+    "storage",
+    "tabs",
+    "activeTab",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "src/background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/content-script.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Open Network Mirror",
+    "default_popup": "src/viewer/popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/viewer/viewer.html", "src/common/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

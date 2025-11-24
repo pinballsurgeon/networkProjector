@@ -54,6 +54,7 @@
     <button class="tab-button active" data-tab="stats">Stats</button>
     <button class="tab-button" data-tab="map">3D Map</button>
     <button class="tab-button" data-tab="solar">Solar 4D</button>
+    <button class="tab-button" data-tab="radar">Radar (Lofi)</button>
   </div>
 
   <div id="statsContent" class="tab-content active">
@@ -196,6 +197,12 @@
     <div id="solar-controls" style="position: absolute; top: 120px; left: 40px;">
         <!-- This will be populated by viz4d.js -->
     </div>
+  </div>
+
+  <div id="radarContent" class="tab-content">
+      <div id="radar-container" style="width: 100%; height: 600px; border: 1px solid #ddd; position: relative; background: #0f172a; overflow: hidden;">
+        <!-- Populated by viz_radar.js -->
+      </div>
   </div>
 
   <script src="three.min.js"></script>
